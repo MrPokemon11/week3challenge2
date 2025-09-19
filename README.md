@@ -9,3 +9,16 @@ procdedures:
 - put the github files in the folder with the unity project
 - tell github where the repo is
 - push the repo to github
+
+things i did:
+- made the multiuv, worldpos debug, and world reflection shaders
+  - ran out of time for All Properties and Lambert Lighting
+
+strengths:
+- creative
+
+weaknesses: 
+- easily distracted
+
+opportunities:
+- I have no idea
