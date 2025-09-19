@@ -2,52 +2,112 @@ Shader "Custom/WorldReflectionShader"
 {
     Properties
     {
-        _Color ("Color", Color) = (1,1,1,1)
-        _MainTex ("Albedo (RGB)", 2D) = "white" {}
-        _Glossiness ("Smoothness", Range(0,1)) = 0.5
-        _Metallic ("Metallic", Range(0,1)) = 0.0
+        // Optional base layer
+        _BaseMap   ("Base Map", 2D) = "white" {}
+        _BaseColor ("Base Color", Color) = (1,1,1,1)
+
+        // Environment reflection
+        _EnvCube     ("Reflection Cubemap", Cube) = "" {}
+        _EnvIntensity("Reflection Intensity", Range(0,2)) = 1.0
+        _EnvBlend    ("Reflection Blend (0=Base,1=Env)", Range(0,1)) = 1.0
+        _FresnelPow  ("Fresnel Power", Range(0.1, 8)) = 5.0    // optional rim bias
+        _FresnelBoost("Fresnel Boost", Range(0, 2)) = 1.0
     }
+
     SubShader
     {
-        Tags { "RenderType"="Opaque" }
+        Tags { "RenderType"="Opaque" "Queue"="Geometry" "RenderPipeline"="UniversalRenderPipeline" }
         LOD 200
 
-        CGPROGRAM
-        // Physically based Standard lighting model, and enable shadows on all light types
-        #pragma surface surf Standard fullforwardshadows
-
-        // Use shader model 3.0 target, to get nicer looking lighting
-        #pragma target 3.0
-
-        sampler2D _MainTex;
-
-        struct Input
+        Pass
         {
-            float2 uv_MainTex;
-        };
+            Name "Unlit"
+            Tags { "LightMode"="UniversalForward" }
 
-        half _Glossiness;
-        half _Metallic;
-        fixed4 _Color;
+            HLSLPROGRAM
+            #pragma vertex   vert
+            #pragma fragment frag
 
-        // Add instancing support for this shader. You need to check 'Enable Instancing' on materials that use the shader.
-        // See https://docs.unity3d.com/Manual/GPUInstancing.html for more information about instancing.
-        // #pragma instancing_options assumeuniformscaling
-        UNITY_INSTANCING_BUFFER_START(Props)
-            // put more per-instance properties here
-        UNITY_INSTANCING_BUFFER_END(Props)
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-        void surf (Input IN, inout SurfaceOutputStandard o)
-        {
-            // Albedo comes from a texture tinted by color
-            fixed4 c = tex2D (_MainTex, IN.uv_MainTex) * _Color;
-            o.Albedo = c.rgb;
-            // Metallic and smoothness come from slider variables
-            o.Metallic = _Metallic;
-            o.Smoothness = _Glossiness;
-            o.Alpha = c.a;
+            // ===== Attributes / Varyings =====
+            struct Attributes
+            {
+                float4 positionOS : POSITION;
+                float3 normalOS   : NORMAL;
+                float2 uv0        : TEXCOORD0;
+            };
+
+            struct Varyings
+            {
+                float4 positionHCS : SV_POSITION;
+                float3 positionWS  : TEXCOORD0;
+                float3 normalWS    : TEXCOORD1;
+                float2 uv          : TEXCOORD2;
+            };
+
+            // ===== Textures & Samplers =====
+            TEXTURE2D(_BaseMap);
+            SAMPLER(sampler_BaseMap);
+
+            TEXTURECUBE(_EnvCube);
+            SAMPLER(sampler_EnvCube);
+
+            // ===== Per-material (SRP Batcher) =====
+            CBUFFER_START(UnityPerMaterial)
+                float4 _BaseColor;
+                float4 _BaseMap_ST;
+                float  _EnvIntensity;
+                float  _EnvBlend;
+                float  _FresnelPow;
+                float  _FresnelBoost;
+            CBUFFER_END
+
+            // ===== Vertex =====
+            Varyings vert (Attributes IN)
+            {
+                Varyings OUT;
+                float3 posWS = TransformObjectToWorld(IN.positionOS.xyz);
+                float3 nrmWS = TransformObjectToWorldNormal(IN.normalOS);
+
+                OUT.positionWS  = posWS;
+                OUT.normalWS    = nrmWS;
+                OUT.positionHCS = TransformWorldToHClip(posWS);
+                OUT.uv          = TRANSFORM_TEX(IN.uv0, _BaseMap);
+                return OUT;
+            }
+
+            // ===== Fragment =====
+            half4 frag (Varyings IN) : SV_Target
+            {
+                // Base layer (optional)
+                half3 baseCol = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, IN.uv).rgb * _BaseColor.rgb;
+
+                // View direction (WS)
+                float3 V = SafeNormalize(GetWorldSpaceViewDir(IN.positionWS));
+
+                // Normal (WS)
+                float3 N = SafeNormalize(IN.normalWS);
+
+                // Reflection vector (WS) = reflect(incident, normal)
+                // HLSL reflect() expects the INCIDENT vector (from surface toward eye), which is -V
+                float3 R = reflect(-V, N);
+
+                // Sample the cubemap with reflection vector
+                half3 envCol = SAMPLE_TEXTURECUBE(_EnvCube, sampler_EnvCube, R).rgb * _EnvIntensity;
+
+                // Optional Fresnel bias (stronger reflections at grazing angles)
+                float  ndotv   = saturate(dot(N, V));
+                float  fresnel = pow(1.0 - ndotv, _FresnelPow) * _FresnelBoost;
+                envCol *= (1.0 + fresnel);
+
+                // Blend env over base (unlit)
+                half3 finalCol = lerp(baseCol, envCol, _EnvBlend);
+                return half4(finalCol, 1.0);
+            }
+            ENDHLSL
         }
-        ENDCG
     }
-    FallBack "Diffuse"
+
+    FallBack Off
 }
